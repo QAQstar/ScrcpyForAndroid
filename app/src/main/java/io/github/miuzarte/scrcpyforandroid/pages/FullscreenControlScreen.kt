@@ -1,15 +1,20 @@
 package io.github.miuzarte.scrcpyforandroid.pages
 
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.graphics.Rect
 import android.hardware.display.DisplayManager
+import android.net.Uri
+import android.provider.Settings
 import android.util.Log
 import android.view.KeyEvent
 import android.view.Surface
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivity
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -41,6 +46,7 @@ import io.github.miuzarte.scrcpyforandroid.scrcpy.GamepadInputHandler
 import io.github.miuzarte.scrcpyforandroid.scrcpy.Scrcpy
 import io.github.miuzarte.scrcpyforandroid.scrcpy.TouchEventHandler
 import io.github.miuzarte.scrcpyforandroid.services.AppRuntime
+import io.github.miuzarte.scrcpyforandroid.services.FloatingWindowService
 import io.github.miuzarte.scrcpyforandroid.services.LocalInputService
 import io.github.miuzarte.scrcpyforandroid.services.LocalSnackbarController
 import io.github.miuzarte.scrcpyforandroid.storage.AppSettings
@@ -451,6 +457,37 @@ fun FullscreenControlScreen(
                         { onDismissRequest -> PasswordPickerPopupContent(onDismissRequest = onDismissRequest) }
                     },
                 )
+            }
+
+            if (!isInPip) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 12.dp, end = 12.dp)
+                        .background(Color.Black.copy(alpha = 0.5f))
+                        .clickable {
+                            if (!Settings.canDrawOverlays(context)) {
+                                // 未授权「显示在其他应用上层」→ 跳系统授权页
+                                context.startActivity(
+                                    Intent(
+                                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                        Uri.parse("package:${context.packageName}"),
+                                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                                )
+                            } else {
+                                FloatingWindowService.start(context)
+                                // 退出全屏到后台, 让悬浮窗覆盖其它应用
+                                (context as? Activity)?.moveTaskToBack(true)
+                            }
+                        }
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                ) {
+                    Text(
+                        text = "悬浮窗",
+                        color = Color.White,
+                        fontSize = 14.sp,
+                    )
+                }
             }
 
             AppListBottomSheet(
