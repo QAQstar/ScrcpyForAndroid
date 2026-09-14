@@ -32,6 +32,8 @@ fun StreamScreen(activity: StreamActivity) {
     var lastPipOrientationLandscape by remember { mutableStateOf<Boolean?>(null) }
 
     DisposableEffect(isInPip) {
+        // 进入全屏即接管画面输出; 悬浮窗会因输出目标变化而自行关闭
+        VideoOutputTargetState.set(VideoOutputTarget.PREVIEW)
         onDispose {
             VideoOutputTargetState.set(VideoOutputTarget.PREVIEW)
         }

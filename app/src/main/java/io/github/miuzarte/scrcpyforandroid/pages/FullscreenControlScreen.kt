@@ -310,6 +310,15 @@ fun FullscreenControlScreen(
 
     fun handleButtonAction(action: VirtualButtonAction) {
         when (action) {
+            VirtualButtonAction.FLOATING_TOGGLE -> {
+                if (FloatingWindowService.isActive()) {
+                    FloatingWindowService.stop(context)
+                } else {
+                    FloatingWindowService.start(context)
+                    (activity as? Activity)?.moveTaskToBack(true)
+                }
+            }
+
             VirtualButtonAction.RECENT_TASKS -> {
                 showRecentTasksSheet = true
                 if (recentTasks.isEmpty() && !listingsRefreshBusy) {
@@ -483,7 +492,7 @@ fun FullscreenControlScreen(
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                 ) {
                     Text(
-                        text = "悬浮窗",
+                        text = stringResource(R.string.floating_window_open),
                         color = Color.White,
                         fontSize = 14.sp,
                     )

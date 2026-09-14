@@ -145,6 +145,12 @@ enum class VirtualButtonAction(
         R.string.vb_paste_clipboard,
         Icons.Rounded.ContentPaste,
         null,
+    ),
+    FLOATING_TOGGLE(
+        "floating_toggle",
+        R.string.vb_floating_toggle,
+        Icons.Rounded.PictureInPictureAlt,
+        null,
     );
 }
 

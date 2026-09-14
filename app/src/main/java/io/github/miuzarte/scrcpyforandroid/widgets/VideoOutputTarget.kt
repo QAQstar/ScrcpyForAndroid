@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.asStateFlow
 enum class VideoOutputTarget {
     NONE,
     PREVIEW,
+    FLOATING,
 }
 
 object VideoOutputTargetState {

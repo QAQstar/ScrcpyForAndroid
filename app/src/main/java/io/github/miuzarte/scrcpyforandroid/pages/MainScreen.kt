@@ -200,6 +200,7 @@ fun MainScreen() {
                 is RootScreen.Advanced -> true
                 is RootScreen.VirtualButtonOrder -> true
                 is RootScreen.ScrcpyOptionRecord -> true
+                is RootScreen.ScrcpyAdvanced -> true
                 else -> false
             }
         },

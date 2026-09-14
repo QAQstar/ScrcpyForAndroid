@@ -334,10 +334,15 @@ internal class DeviceTabViewModel(
 
     /** 重新连接当前设备; ADB 已断开时先恢复 ADB。 */
     private fun requestReconnect() {
+        if (_busy.value) return
         viewModelScope.launch {
             runCatching {
                 if (!adbConnected.value) {
-                    val target = currentTarget.value ?: return@runCatching
+                    val target = currentTarget.value
+                    if (target == null) {
+                        AppRuntime.snackbar(R.string.vm_auto_reconnect_failed)
+                        return@runCatching
+                    }
                     connectionController.connectWithTimeout(
                         target.host,
                         target.port,

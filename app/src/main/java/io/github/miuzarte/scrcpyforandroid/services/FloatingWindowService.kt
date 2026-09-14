@@ -16,6 +16,7 @@ import android.view.Gravity
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.view.View
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.compose.foundation.background
@@ -37,6 +38,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -51,6 +54,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
@@ -68,24 +72,31 @@ import io.github.miuzarte.scrcpyforandroid.NativeCoreFacade
 import io.github.miuzarte.scrcpyforandroid.R
 import io.github.miuzarte.scrcpyforandroid.StreamActivity
 import io.github.miuzarte.scrcpyforandroid.scrcpy.Scrcpy
+import io.github.miuzarte.scrcpyforandroid.scrcpy.TouchEventHandler
 import io.github.miuzarte.scrcpyforandroid.storage.Storage.appSettings
+import io.github.miuzarte.scrcpyforandroid.widgets.VideoOutputTarget
+import io.github.miuzarte.scrcpyforandroid.widgets.VideoOutputTargetState
 import io.github.miuzarte.scrcpyforandroid.widgets.VirtualButtonAction
 import io.github.miuzarte.scrcpyforandroid.widgets.VirtualButtonActions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 /**
  * 系统级悬浮窗（TYPE_APPLICATION_OVERLAY），样式对齐 Easycontrol 车机版：
- * 顶部横条拖动、右下角（透明）手柄按画面长宽比缩放、下方为虚拟按键。
+ * 顶部贴边横条（可拖动 / 点击展开菜单 / 可关闭 / 自动隐藏）、
+ * 右下角透明手柄按画面比例缩放、下方为虚拟按键。
  *
- * 视频画面通过 [NativeCoreFacade.attachVideoSurface] 绑定到内置 [SurfaceView]；
- * 触控经 [Scrcpy.injectTouch] 转发到被控设备。
- *
- * 悬浮窗内容使用 Compose 渲染，以便直接复用项目的 [VirtualButtonAction] 图标与样式。
+ * 复用项目既有能力：
+ * - 画面绑定走 [NativeCoreFacade.attachVideoSurface]；
+ * - 输出归属由 [VideoOutputTargetState] 仲裁（应用内预览/全屏与悬浮窗互斥）；
+ * - 触控复用 [TouchEventHandler]；
+ * - 虚拟按键图标复用 [VirtualButtonAction]。
  */
 class FloatingWindowService : Service(),
     LifecycleOwner,
@@ -101,7 +112,7 @@ class FloatingWindowService : Service(),
         private const val DEFAULT_ASPECT = 16f / 9f
         private const val MIN_VIDEO_WIDTH_DP = 160
         private const val BOTTOM_BAR_DP = 44
-        private const val CORNER_DP = 14
+        private const val BAR_HIDE_MS = 4000L
 
         fun start(context: Context) {
             val intent = Intent(context, FloatingWindowService::class.java)
@@ -113,10 +124,11 @@ class FloatingWindowService : Service(),
         }
 
         fun stop(context: Context) {
-            context.startService(
-                Intent(context, FloatingWindowService::class.java).setAction(ACTION_STOP),
-            )
+            context.stopService(Intent(context, FloatingWindowService::class.java))
         }
+
+        fun isActive(): Boolean =
+            VideoOutputTargetState.current.value == VideoOutputTarget.FLOATING
     }
 
     private val lifecycleRegistry = LifecycleRegistry(this)
@@ -129,24 +141,26 @@ class FloatingWindowService : Service(),
         get() = savedStateRegistryController.savedStateRegistry
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val inputScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private lateinit var windowManager: WindowManager
     private var root: ComposeView? = null
+    private var surfaceView: SurfaceView? = null
     private var params: WindowManager.LayoutParams? = null
     private var attachedSurface: Surface? = null
+    private var touchHandler: TouchEventHandler? = null
 
     private var screenWidth = 0
     private var screenHeight = 0
     private var statusBarHeight = 0
     private var density = 1f
+    private var videoAspect = DEFAULT_ASPECT
 
     private var session by mutableStateOf<Scrcpy.Session.SessionInfo?>(null)
     private var outsideActions by mutableStateOf<List<VirtualButtonAction>>(emptyList())
     private var moreActions by mutableStateOf<List<VirtualButtonAction>>(emptyList())
-
-    private var videoAspect = DEFAULT_ASPECT
-
-    private val activePointers = HashMap<Int, Pair<Int, Int>>()
+    private var barVisible by mutableStateOf(true)
+    private var barHideJob: Job? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -167,15 +181,30 @@ class FloatingWindowService : Service(),
             showOverlay()
             observeSession()
             observeActions()
+            observeOutputTarget()
         }
         return START_STICKY
     }
 
     override fun onDestroy() {
-        scope.cancel()
+        val surface = attachedSurface
+        attachedSurface = null
+        barHideJob?.cancel()
+        if (VideoOutputTargetState.current.value == VideoOutputTarget.FLOATING) {
+            VideoOutputTargetState.set(VideoOutputTarget.NONE)
+        }
         root?.let { view -> runCatching { windowManager.removeView(view) } }
         root = null
-        attachedSurface = null
+        surfaceView = null
+        touchHandler = null
+        // 用独立作用域兜底释放 surface, 避免被 scope.cancel() 取消
+        if (surface != null) {
+            CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+                runCatching { NativeCoreFacade.detachVideoSurface(surface, releaseDecoder = true) }
+            }
+        }
+        scope.cancel()
+        inputScope.cancel()
         lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         super.onDestroy()
     }
@@ -186,14 +215,7 @@ class FloatingWindowService : Service(),
 
     private fun showOverlay() {
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        val metrics = resources.displayMetrics
-        density = metrics.density
-        screenWidth = metrics.widthPixels
-        screenHeight = metrics.heightPixels
-        statusBarHeight = run {
-            val id = resources.getIdentifier("status_bar_height", "dimen", "android")
-            if (id > 0) resources.getDimensionPixelSize(id) else 0
-        }
+        refreshScreenMetrics()
 
         val initialWidth = (screenWidth * 0.55f).roundToInt().coerceAtLeast(minVideoWidth())
         val initialHeight = videoHeightFor(initialWidth) + bottomBarHeight()
@@ -229,26 +251,70 @@ class FloatingWindowService : Service(),
                     session = session,
                     outsideActions = outsideActions,
                     moreActions = moreActions,
+                    barVisible = barVisible,
                     onDrag = ::dragBy,
                     onResize = ::resizeBy,
+                    onBarInteraction = ::showBar,
+                    onClose = ::stopSelf,
                     onAction = ::dispatchAction,
                     onReconnect = { AppRuntime.reconnectRequests.tryEmit(Unit) },
                     onSurfaceAvailable = ::onSurfaceAvailable,
                     onSurfaceDestroyed = ::onSurfaceDestroyed,
+                    onSurfaceViewCreated = ::onSurfaceViewCreated,
+                    onSurfaceViewLayout = ::rebuildTouchHandler,
                 )
             }
         }
-        root = composeView
-        runCatching { windowManager.addView(composeView, lp) }
+
+        val added = runCatching { windowManager.addView(composeView, lp) }
             .onFailure { Log.e(TAG, "addView failed", it) }
+            .isSuccess
+        if (!added) {
+            stopSelf()
+            return
+        }
+        root = composeView
+        showBar()
+        // 交由本窗口接管画面输出
+        VideoOutputTargetState.set(VideoOutputTarget.FLOATING)
+    }
+
+    private fun refreshScreenMetrics() {
+        val metrics = resources.displayMetrics
+        density = metrics.density
+        screenWidth = metrics.widthPixels
+        screenHeight = metrics.heightPixels
+        statusBarHeight = run {
+            val id = resources.getIdentifier("status_bar_height", "dimen", "android")
+            if (id > 0) resources.getDimensionPixelSize(id) else 0
+        }
+    }
+
+    private fun showBar() {
+        barVisible = true
+        barHideJob?.cancel()
+        barHideJob = scope.launch {
+            delay(BAR_HIDE_MS)
+            barVisible = false
+        }
     }
 
     private fun observeSession() {
         scope.launch {
-            val scrcpy = AppRuntime.scrcpy ?: return@launch
+            var scrcpy = AppRuntime.scrcpy
+            while (scrcpy == null) {
+                delay(500)
+                scrcpy = AppRuntime.scrcpy
+            }
             scrcpy.currentSessionState.collect { info ->
                 session = info
                 applyAspect(info)
+                rebuildTouchHandler()
+                val surface = attachedSurface
+                if (info != null && surface != null && surface.isValid) {
+                    runCatching { NativeCoreFacade.attachVideoSurface(surface) }
+                }
+                showBar()
             }
         }
     }
@@ -266,14 +332,22 @@ class FloatingWindowService : Service(),
         }
     }
 
-    /** 会话宽高变化时，按新比例修正窗口高度，保持画面不变形。 */
+    /** 应用内预览/全屏接管输出时, 自动关闭悬浮窗 (二者互斥)。 */
+    private fun observeOutputTarget() {
+        scope.launch {
+            VideoOutputTargetState.current.collect { target ->
+                if (target != VideoOutputTarget.FLOATING) stopSelf()
+            }
+        }
+    }
+
+    /** 会话宽高变化时按新比例修正窗口尺寸, 保持画面不变形。 */
     private fun applyAspect(info: Scrcpy.Session.SessionInfo?) {
         val lp = params ?: return
-        val aspect = info
+        videoAspect = info
             ?.takeIf { it.width > 0 && it.height > 0 }
             ?.let { it.width.toFloat() / it.height.toFloat() }
             ?: DEFAULT_ASPECT
-        videoAspect = aspect
         lp.width = lp.width.coerceIn(minVideoWidth(), maxVideoWidth())
         lp.height = videoHeightFor(lp.width) + bottomBarHeight()
         clampPosition(lp)
@@ -292,13 +366,14 @@ class FloatingWindowService : Service(),
         runCatching { windowManager.updateViewLayout(root, lp) }
     }
 
-    /** 仅以水平位移驱动缩放，并强制保持画面长宽比。 */
+    /** 仅以水平位移驱动缩放, 并强制保持画面长宽比。 */
     private fun resizeBy(dx: Float) {
         val lp = params ?: return
         lp.width = (lp.width + dx.roundToInt()).coerceIn(minVideoWidth(), maxVideoWidth())
         lp.height = videoHeightFor(lp.width) + bottomBarHeight()
         clampPosition(lp)
         runCatching { windowManager.updateViewLayout(root, lp) }
+        rebuildTouchHandler()
     }
 
     private fun clampPosition(lp: WindowManager.LayoutParams) {
@@ -312,7 +387,7 @@ class FloatingWindowService : Service(),
 
     private fun maxVideoWidth(): Int {
         val byHeight = ((screenHeight - bottomBarHeight()) * videoAspect).roundToInt()
-        return (screenWidth.coerceAtMost(byHeight)).coerceAtLeast(minVideoWidth())
+        return screenWidth.coerceAtMost(byHeight).coerceAtLeast(minVideoWidth())
     }
 
     private fun videoHeightFor(width: Int): Int =
@@ -322,15 +397,14 @@ class FloatingWindowService : Service(),
         if (outsideActions.isEmpty()) 0 else (BOTTOM_BAR_DP * density).roundToInt()
 
     // ------------------------------------------------------------------
-    // 视频绑定
+    // 视频绑定 / 触控
     // ------------------------------------------------------------------
 
     private fun onSurfaceAvailable(holder: SurfaceHolder) {
         val surface = holder.surface
         if (!surface.isValid) return
         attachedSurface = surface
-        // 会话就绪时再绑定; 会话变化由 observeSession 兜底重绑
-        if (session == null) return
+        // 无会话时提前注册是安全的, 会话到来后由 observeSession/onScrcpySessionStarted 接管
         scope.launch {
             runCatching { NativeCoreFacade.attachVideoSurface(surface) }
                 .onFailure { Log.w(TAG, "attachVideoSurface failed", it) }
@@ -343,6 +417,49 @@ class FloatingWindowService : Service(),
         scope.launch { runCatching { NativeCoreFacade.detachVideoSurface(surface) } }
     }
 
+    private fun onSurfaceViewCreated(view: SurfaceView) {
+        surfaceView = view
+        view.setOnTouchListener { _, event ->
+            if (event.actionMasked == android.view.MotionEvent.ACTION_DOWN) showBar()
+            touchHandler?.handleMotionEvent(event) ?: false
+        }
+    }
+
+    private fun rebuildTouchHandler() {
+        val view = surfaceView ?: return
+        val info = session ?: return
+        val scrcpy = AppRuntime.scrcpy ?: return
+        if (view.width <= 0 || view.height <= 0) return
+        touchHandler = TouchEventHandler(
+            coroutineScope = inputScope,
+            session = info,
+            touchAreaSize = IntSize(view.width, view.height),
+            activePointerIds = LinkedHashSet(),
+            activePointerPositions = LinkedHashMap(),
+            activePointerDevicePositions = LinkedHashMap(),
+            pointerLabels = LinkedHashMap(),
+            nextPointerLabel = 1,
+            mouseHoverEnabled = info.mouseHover,
+            onInjectTouch = { action, pointerId, x, y, pressure, actionButton, buttons ->
+                scrcpy.injectTouch(
+                    action = action,
+                    pointerId = pointerId,
+                    x = x,
+                    y = y,
+                    screenWidth = info.width,
+                    screenHeight = info.height,
+                    pressure = pressure,
+                    actionButton = actionButton,
+                    buttons = buttons,
+                )
+            },
+            onBackOrScreenOn = { action -> scrcpy.pressBackOrTurnScreenOn(action) },
+            onActiveTouchCountChanged = {},
+            onActiveTouchDebugChanged = {},
+            onNextPointerLabelChanged = {},
+        )
+    }
+
     // ------------------------------------------------------------------
     // 按键动作
     // ------------------------------------------------------------------
@@ -350,6 +467,8 @@ class FloatingWindowService : Service(),
     private fun dispatchAction(action: VirtualButtonAction) {
         val scrcpy = AppRuntime.scrcpy ?: return
         when (action) {
+            VirtualButtonAction.FLOATING_TOGGLE -> switchToFullscreen()
+
             VirtualButtonAction.PASTE_LOCAL_CLIPBOARD -> scope.launch {
                 val text = LocalInputService.getClipboardText(this@FloatingWindowService)
                     ?.takeIf { it.isNotBlank() }
@@ -382,6 +501,13 @@ class FloatingWindowService : Service(),
         }
     }
 
+    private fun switchToFullscreen() {
+        runCatching {
+            startActivity(StreamActivity.createIntent(this).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }
+        stopSelf()
+    }
+
     // ------------------------------------------------------------------
     // 前台服务
     // ------------------------------------------------------------------
@@ -390,7 +516,11 @@ class FloatingWindowService : Service(),
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             manager.createNotificationChannel(
-                NotificationChannel(CHANNEL_ID, "悬浮窗", NotificationManager.IMPORTANCE_LOW),
+                NotificationChannel(
+                    CHANNEL_ID,
+                    getString(R.string.floating_window_channel),
+                    NotificationManager.IMPORTANCE_LOW,
+                ),
             )
         }
         val contentIntent = PendingIntent.getActivity(
@@ -446,14 +576,20 @@ private fun FloatingWindowContent(
     session: Scrcpy.Session.SessionInfo?,
     outsideActions: List<VirtualButtonAction>,
     moreActions: List<VirtualButtonAction>,
+    barVisible: Boolean,
     onDrag: (Float, Float) -> Unit,
     onResize: (Float) -> Unit,
+    onBarInteraction: () -> Unit,
+    onClose: () -> Unit,
     onAction: (VirtualButtonAction) -> Unit,
     onReconnect: () -> Unit,
     onSurfaceAvailable: (SurfaceHolder) -> Unit,
     onSurfaceDestroyed: () -> Unit,
+    onSurfaceViewCreated: (SurfaceView) -> Unit,
+    onSurfaceViewLayout: () -> Unit,
 ) {
     var showMenu by remember { mutableStateOf(false) }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -482,6 +618,11 @@ private fun FloatingWindowContent(
                             override fun surfaceDestroyed(holder: SurfaceHolder) =
                                 onSurfaceDestroyed()
                         })
+                        addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+                            // 尺寸变化后重建触控映射
+                            onSurfaceViewLayout()
+                        }
+                        onSurfaceViewCreated(this)
                     }
                 },
                 modifier = Modifier.fillMaxSize(),
@@ -514,13 +655,20 @@ private fun FloatingWindowContent(
                 }
             }
 
-            DragBar(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 6.dp),
-                onDrag = onDrag,
-                onTap = { showMenu = !showMenu },
-            )
+            if (barVisible) {
+                TopBar(
+                    modifier = Modifier.align(Alignment.TopCenter),
+                    onDrag = {
+                        onBarInteraction()
+                        onDrag(it.first, it.second)
+                    },
+                    onTap = {
+                        onBarInteraction()
+                        showMenu = !showMenu
+                    },
+                    onClose = onClose,
+                )
+            }
 
             if (showMenu && moreActions.isNotEmpty()) {
                 ActionMenu(
@@ -531,11 +679,11 @@ private fun FloatingWindowContent(
                     },
                     modifier = Modifier
                         .align(Alignment.TopCenter)
-                        .padding(top = 38.dp),
+                        .padding(top = 34.dp),
                 )
             }
 
-            // 右下手柄：透明度为 0，不显示热区，仅保留触摸区
+            // 右下手柄: 不绘制任何背景, 仅保留透明触摸区
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
@@ -543,6 +691,7 @@ private fun FloatingWindowContent(
                     .pointerInput(Unit) {
                         detectDragGestures { change, dragAmount ->
                             change.consume()
+                            onBarInteraction()
                             onResize(dragAmount.x)
                         }
                     },
@@ -578,34 +727,58 @@ private fun FloatingWindowContent(
     }
 }
 
+/** 贴顶居中的横条: 拖动移动 / 点击展开菜单 / 右侧关闭。 */
 @Composable
-private fun DragBar(
+private fun TopBar(
     modifier: Modifier,
-    onDrag: (Float, Float) -> Unit,
+    onDrag: (Pair<Float, Float>) -> Unit,
     onTap: () -> Unit,
+    onClose: () -> Unit,
 ) {
-    Box(
+    Row(
         modifier = modifier
-            .width(96.dp)
+            .width(132.dp)
             .height(26.dp)
-            .clip(RoundedCornerShape(50))
+            .clip(RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp))
             .background(Color.White.copy(alpha = 0.22f))
-            .pointerInput(Unit) { detectTapGestures { onTap() } }
             .pointerInput(Unit) {
                 detectDragGestures { change, dragAmount ->
                     change.consume()
-                    onDrag(dragAmount.x, dragAmount.y)
+                    onDrag(dragAmount.x to dragAmount.y)
                 }
+            }
+            .pointerInput(Unit) {
+                detectTapGestures(onTap = { onTap() })
             },
-        contentAlignment = Alignment.Center,
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
             modifier = Modifier
-                .width(64.dp)
-                .height(6.dp)
-                .clip(RoundedCornerShape(50))
-                .background(Color.White.copy(alpha = 0.6f)),
-        )
+                .weight(1f)
+                .fillMaxHeight(),
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(56.dp)
+                    .height(5.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(Color.White.copy(alpha = 0.7f)),
+            )
+        }
+        Box(
+            modifier = Modifier
+                .size(26.dp)
+                .clickable { onClose() },
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.Close,
+                contentDescription = stringResource(R.string.floating_window_close),
+                tint = Color.White,
+                modifier = Modifier.size(16.dp),
+            )
+        }
     }
 }
 

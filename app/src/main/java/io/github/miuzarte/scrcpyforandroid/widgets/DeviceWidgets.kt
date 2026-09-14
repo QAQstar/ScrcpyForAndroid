@@ -973,10 +973,20 @@ fun ScrcpyVideoSurface(
 
     val latestSession by rememberUpdatedState(session)
 
-    LaunchedEffect(session, currentSurface) {
+    val outputTarget by VideoOutputTargetState.current.collectAsState()
+
+    LaunchedEffect(session, currentSurface, outputTarget) {
         val surface = currentSurface ?: return@LaunchedEffect
-        if (session != null && surface.isValid) {
+        if (outputTarget != VideoOutputTarget.FLOATING && session != null && surface.isValid) {
             NativeCoreFacade.attachVideoSurface(surface)
+        }
+    }
+
+    // 悬浮窗独占输出时主动让出 surface, 避免两个 Surface 争用导致花屏
+    LaunchedEffect(outputTarget, currentSurface) {
+        val surface = currentSurface ?: return@LaunchedEffect
+        if (outputTarget == VideoOutputTarget.FLOATING) {
+            runCatching { NativeCoreFacade.detachVideoSurface(surface) }
         }
     }
 
@@ -1000,9 +1010,10 @@ fun ScrcpyVideoSurface(
         currentSurfaceView?.setGamepadCaptureEnabled(gamepadCaptureEnabled)
     }
 
-    DisposableEffect(lifecycleOwner, session, currentSurface) {
+    DisposableEffect(lifecycleOwner, session, currentSurface, outputTarget) {
         val surface = currentSurface
         if (
+            outputTarget != VideoOutputTarget.FLOATING &&
             lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) &&
             session != null &&
             surface != null &&
@@ -1013,7 +1024,7 @@ fun ScrcpyVideoSurface(
             }
         }
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_START) {
+            if (event == Lifecycle.Event.ON_START && outputTarget != VideoOutputTarget.FLOATING) {
                 val surface = currentSurface
                 if (session != null && surface != null && surface.isValid) {
                     scope.launch {
@@ -1147,7 +1158,16 @@ private fun Modifier.onLongPressCompat(onLongPress: () -> Unit): Modifier = poin
                 }
             }
         }
-        if (finished == null) onLongPress()
+        if (finished == null) {
+            onLongPress()
+            // 消费本次手势的后续事件, 避免子组件 clickable 在同一次长按中再次触发
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                change.consume()
+                if (!change.pressed) break
+            }
+        }
     }
 }
 
