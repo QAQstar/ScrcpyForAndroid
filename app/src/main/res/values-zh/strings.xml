@@ -628,4 +628,19 @@
     <string name="language_english">英语</string>
     <string name="language_chinese">中文</string>
 
+    <string name="floating_window_title">Scrcpy 悬浮窗</string>
+    <string name="floating_window_channel">悬浮窗</string>
+    <string name="floating_window_open">悬浮窗</string>
+    <string name="floating_window_close">关闭</string>
+    <string name="floating_window_disconnected">已断开连接</string>
+    <string name="floating_window_action_needs_app">该功能需在应用内使用</string>
+    <string name="floating_window_permission_needed">请先授予「显示在其他应用上层」权限</string>
+    <string name="device_config_floating_window">启用悬浮窗</string>
+    <string name="action_reconnect">重连</string>
+    <string name="device_config_display_width">显示宽度 px (-1 不修改, 0 重置)</string>
+    <string name="device_config_display_height">显示高度 px (-1 不修改, 0 重置)</string>
+    <string name="device_config_display_density">显示 DPI (-1 不修改, 0 重置)</string>
+    <string name="device_display_override_failed">切换显示参数失败</string>
+    <string name="vb_floating_toggle">全屏 / 悬浮窗</string>
+
 </resources>
