@@ -7,7 +7,7 @@ import android.content.Intent
 import android.graphics.Rect
 import android.hardware.display.DisplayManager
 import android.net.Uri
-import android.provider.Settings
+import android.provider.Settings as AndroidSettings
 import android.util.Log
 import android.view.KeyEvent
 import android.view.Surface
@@ -466,11 +466,11 @@ fun FullscreenControlScreen(
                         .padding(top = 12.dp, end = 12.dp)
                         .background(Color.Black.copy(alpha = 0.5f))
                         .clickable {
-                            if (!Settings.canDrawOverlays(context)) {
+                            if (!AndroidSettings.canDrawOverlays(context)) {
                                 // 未授权「显示在其他应用上层」→ 跳系统授权页
                                 context.startActivity(
                                     Intent(
-                                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                        AndroidSettings.ACTION_MANAGE_OVERLAY_PERMISSION,
                                         Uri.parse("package:${context.packageName}"),
                                     ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                                 )
