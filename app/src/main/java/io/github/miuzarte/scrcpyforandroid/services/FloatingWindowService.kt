@@ -329,6 +329,8 @@ class FloatingWindowService : Service(),
         val surface = holder.surface
         if (!surface.isValid) return
         attachedSurface = surface
+        // 会话就绪时再绑定; 会话变化由 observeSession 兜底重绑
+        if (session == null) return
         scope.launch {
             runCatching { NativeCoreFacade.attachVideoSurface(surface) }
                 .onFailure { Log.w(TAG, "attachVideoSurface failed", it) }
