@@ -428,6 +428,9 @@ internal class DeviceTabViewModel(
         startScrcpyOnConnect: Boolean? = null,
         openFullscreenOnStart: Boolean? = null,
         floatingWindowOnConnect: Boolean? = null,
+        displayWidth: Int? = null,
+        displayHeight: Int? = null,
+        displayDensity: Int? = null,
         scrcpyProfileId: String? = null,
         newPort: Int? = null,
         updateNameOnlyWhenEmpty: Boolean = false,
@@ -441,6 +444,9 @@ internal class DeviceTabViewModel(
                 startScrcpyOnConnect = startScrcpyOnConnect,
                 openFullscreenOnStart = openFullscreenOnStart,
                 floatingWindowOnConnect = floatingWindowOnConnect,
+                displayWidth = displayWidth,
+                displayHeight = displayHeight,
+                displayDensity = displayDensity,
                 scrcpyProfileId = scrcpyProfileId,
                 newPort = newPort,
                 updateNameOnlyWhenEmpty = updateNameOnlyWhenEmpty,
@@ -828,19 +834,46 @@ internal class DeviceTabViewModel(
         }
     }
 
+    /**
+     * 连接时按设备配置切换被控设备的分辨率 / DPI。
+     * -1 表示不修改；0 表示重置为设备默认。
+     */
+    private suspend fun applyDisplayOverride(device: DeviceShortcut?) {
+        if (device == null) return
+        val width = device.displayWidth
+        val height = device.displayHeight
+        val densityValue = device.displayDensity
+        if (width < 0 && height < 0 && densityValue < 0) return
+        runCatching {
+            if (width >= 0 && height >= 0) {
+                adbCoordinator.shell(
+                    if (width > 0 && height > 0) "wm size ${width}x$height" else "wm size reset",
+                )
+            }
+            if (densityValue >= 0) {
+                adbCoordinator.shell(
+                    if (densityValue > 0) "wm density $densityValue" else "wm density reset",
+                )
+            }
+        }.onFailure { error ->
+            logEvent(R.string.device_display_override_failed, level = Log.WARN, error = error)
+        }
+    }
+
     suspend fun startScrcpySession(
         openFullscreen: Boolean = false,
         startAppOverride: String? = null,
     ) {
-        val floatingWindowEnabled = currentTarget.value
+        val activeShortcut = currentTarget.value
             ?.let { target -> savedShortcuts.value.firstOrNull { it.matchesAddress(target) } }
-            ?.floatingWindowOnConnect == true
+        val floatingWindowEnabled = activeShortcut?.floatingWindowOnConnect == true
         val activeBundle = resolveScrcpyBundle(connectedScrcpyProfileId.value)
         val options = scrcpyOptions.toClientOptions(activeBundle).fix()
         val resolvedOptions = startAppOverride
             ?.takeIf { it.isNotBlank() }
             ?.let { options.copy(startApp = it) }
             ?: options
+        applyDisplayOverride(activeShortcut)
         val session = scrcpy.start(resolvedOptions)
         _pendingScrollToPreview.value = resolvedOptions.video && resolvedOptions.videoPlayback
 

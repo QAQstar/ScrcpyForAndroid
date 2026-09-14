@@ -617,6 +617,10 @@
     <string name="floating_window_permission_needed">请先授予「显示在其他应用上层」权限</string>
     <string name="device_config_floating_window">启用悬浮窗</string>
     <string name="action_reconnect">重连</string>
+    <string name="device_config_display_width">显示宽度 px (-1 不修改, 0 重置)</string>
+    <string name="device_config_display_height">显示高度 px (-1 不修改, 0 重置)</string>
+    <string name="device_config_display_density">显示 DPI (-1 不修改, 0 重置)</string>
+    <string name="device_display_override_failed">切换显示参数失败</string>
     <string name="vm_decoder_unsupported_size">Device decoder does not support %1$dx%2$d, downgrading to max_size=%3$d and restarting</string>
     <string name="vm_decoder_init_failed">Decoder initialization failed: %1$s</string>
     <string name="vm_decoder_error_restarting">Decoder error, restarting session</string>

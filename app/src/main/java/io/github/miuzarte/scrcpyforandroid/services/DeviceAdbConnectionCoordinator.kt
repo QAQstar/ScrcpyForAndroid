@@ -213,4 +213,11 @@ internal class DeviceAdbConnectionCoordinator(
             )
         }
     }
+
+    /** 在已连接设备上执行一条 shell 命令。 */
+    suspend fun shell(command: String): String {
+        return withContext(Dispatchers.IO) {
+            adbService.shell(command)
+        }
+    }
 }

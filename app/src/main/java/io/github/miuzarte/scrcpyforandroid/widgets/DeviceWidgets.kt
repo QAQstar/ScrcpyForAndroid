@@ -1381,6 +1381,39 @@ internal fun DeviceTile(
                             )
                         },
                     )
+                    SuperTextField(
+                        value = currentDraft.displayWidth.takeIf { it >= 0 }?.toString().orEmpty(),
+                        onValueChange = {
+                            draft = currentDraft.copy(
+                                displayWidth = it.filter(Char::isDigit).toIntOrNull() ?: -1,
+                            )
+                        },
+                        label = stringResource(R.string.device_config_display_width),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    SuperTextField(
+                        value = currentDraft.displayHeight.takeIf { it >= 0 }?.toString().orEmpty(),
+                        onValueChange = {
+                            draft = currentDraft.copy(
+                                displayHeight = it.filter(Char::isDigit).toIntOrNull() ?: -1,
+                            )
+                        },
+                        label = stringResource(R.string.device_config_display_height),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    SuperTextField(
+                        value = currentDraft.displayDensity.takeIf { it >= 0 }?.toString().orEmpty(),
+                        onValueChange = {
+                            draft = currentDraft.copy(
+                                displayDensity = it.filter(Char::isDigit).toIntOrNull() ?: -1,
+                            )
+                        },
+                        label = stringResource(R.string.device_config_display_density),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                 }
                 Row(
                     modifier = Modifier
