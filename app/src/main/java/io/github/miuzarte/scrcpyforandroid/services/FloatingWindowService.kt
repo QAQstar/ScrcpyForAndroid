@@ -8,28 +8,65 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.graphics.Color
-import android.graphics.Outline
 import android.graphics.PixelFormat
-import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import android.view.Gravity
-import android.view.MotionEvent
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
-import android.view.View
-import android.view.ViewOutlineProvider
 import android.view.WindowManager
-import android.widget.FrameLayout
-import android.widget.LinearLayout
-import android.widget.TextView
+import android.widget.Toast
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.ViewModelStoreOwner
+import androidx.lifecycle.setViewTreeLifecycleOwner
+import androidx.lifecycle.setViewTreeViewModelStoreOwner
+import androidx.savedstate.SavedStateRegistry
+import androidx.savedstate.SavedStateRegistryController
+import androidx.savedstate.SavedStateRegistryOwner
+import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import io.github.miuzarte.scrcpyforandroid.NativeCoreFacade
 import io.github.miuzarte.scrcpyforandroid.R
 import io.github.miuzarte.scrcpyforandroid.StreamActivity
 import io.github.miuzarte.scrcpyforandroid.scrcpy.Scrcpy
+import io.github.miuzarte.scrcpyforandroid.storage.Storage.appSettings
+import io.github.miuzarte.scrcpyforandroid.widgets.VirtualButtonAction
+import io.github.miuzarte.scrcpyforandroid.widgets.VirtualButtonActions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -38,24 +75,29 @@ import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 /**
- * 系统级悬浮窗（TYPE_APPLICATION_OVERLAY）。
+ * 系统级悬浮窗（TYPE_APPLICATION_OVERLAY），样式对齐 Easycontrol 车机版：
+ * 顶部横条拖动、右下角（透明）手柄按画面长宽比缩放、下方为虚拟按键。
  *
- * 视频画面来源：
- * 直接把 [SurfaceView] 的 [Surface] 交给 [NativeCoreFacade.attachVideoSurface]，
- * 由 PersistentVideoRenderer 通过 EGL 把解码后的帧画到这块 Surface 上。
- * 触控则通过 [Scrcpy.injectTouch] 转发到被控设备。
+ * 视频画面通过 [NativeCoreFacade.attachVideoSurface] 绑定到内置 [SurfaceView]；
+ * 触控经 [Scrcpy.injectTouch] 转发到被控设备。
  *
- * 注意：渲染器同一时刻只持有一个 display surface。
- * 因此本悬浮窗显示时，全屏 Activity 的画面会被“抢走”；
- * 点“全屏”按钮回到 Activity 后，Activity 的 surface 会重新接管。
+ * 悬浮窗内容使用 Compose 渲染，以便直接复用项目的 [VirtualButtonAction] 图标与样式。
  */
-class FloatingWindowService : Service() {
+class FloatingWindowService : Service(),
+    LifecycleOwner,
+    ViewModelStoreOwner,
+    SavedStateRegistryOwner {
 
     companion object {
         private const val TAG = "FloatingWindow"
         private const val CHANNEL_ID = "floating_window"
         private const val NOTIFICATION_ID = 1001
         private const val ACTION_STOP = "io.github.miuzarte.scrcpyforandroid.action.FLOATING_STOP"
+
+        private const val DEFAULT_ASPECT = 16f / 9f
+        private const val MIN_VIDEO_WIDTH_DP = 160
+        private const val BOTTOM_BAR_DP = 44
+        private const val CORNER_DP = 14
 
         fun start(context: Context) {
             val intent = Intent(context, FloatingWindowService::class.java)
@@ -73,22 +115,42 @@ class FloatingWindowService : Service() {
         }
     }
 
+    private val lifecycleRegistry = LifecycleRegistry(this)
+    private val savedStateRegistryController = SavedStateRegistryController.create(this)
+    private val viewModelStore = ViewModelStore()
+
+    override val lifecycle: Lifecycle get() = lifecycleRegistry
+    override val viewModelStore: ViewModelStore get() = viewModelStore
+    override val savedStateRegistry: SavedStateRegistry
+        get() = savedStateRegistryController.savedStateRegistry
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
     private lateinit var windowManager: WindowManager
-
-    private var root: View? = null
-    private var surfaceView: SurfaceView? = null
-    private var videoContainer: FrameLayout? = null
+    private var root: ComposeView? = null
     private var params: WindowManager.LayoutParams? = null
-
     private var attachedSurface: Surface? = null
-    private val activePointers = HashMap<Int, Pair<Int, Int>>()
 
     private var screenWidth = 0
     private var screenHeight = 0
+    private var statusBarHeight = 0
     private var density = 1f
 
+    private var session by mutableStateOf<Scrcpy.Session.SessionInfo?>(null)
+    private var actions by mutableStateOf<List<VirtualButtonAction>>(emptyList())
+
+    private var videoAspect = DEFAULT_ASPECT
+
+    private val activePointers = HashMap<Int, Pair<Int, Int>>()
+
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        savedStateRegistryController.performRestore(null)
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
+        lifecycleRegistry.currentState = Lifecycle.State.RESUMED
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
@@ -99,25 +161,23 @@ class FloatingWindowService : Service() {
         if (root == null) {
             showOverlay()
             observeSession()
+            observeActions()
         }
         return START_STICKY
     }
 
     override fun onDestroy() {
-        root?.let { runCatching { windowManager.removeView(it) } }
-        root = null
-        surfaceView = null
-        videoContainer = null
-        attachedSurface = null
         scope.cancel()
+        root?.let { view -> runCatching { windowManager.removeView(view) } }
+        root = null
+        attachedSurface = null
+        lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         super.onDestroy()
     }
 
-    // ---------------------------------------------------------------------
-    // 悬浮窗构建
-    // ---------------------------------------------------------------------
-
-    private fun dp(value: Int): Int = (value * density).roundToInt()
+    // ------------------------------------------------------------------
+    // 悬浮窗
+    // ------------------------------------------------------------------
 
     private fun showOverlay() {
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -125,375 +185,194 @@ class FloatingWindowService : Service() {
         density = metrics.density
         screenWidth = metrics.widthPixels
         screenHeight = metrics.heightPixels
-
-        val initWidth = (screenWidth * 0.6f).roundToInt()
-        val initHeight = (screenHeight * 0.5f).roundToInt()
-
-        // 顶层 FrameLayout：圆角 + 顶栏 + 视频区 + 右下角缩放手柄
-        val container = FrameLayout(this).apply {
-            background = GradientDrawable().apply {
-                cornerRadius = dp(12).toFloat()
-                setColor(Color.BLACK)
-            }
-            outlineProvider = object : ViewOutlineProvider() {
-                override fun getOutline(view: View, outline: Outline) {
-                    outline.setRoundRect(0, 0, view.width, view.height, dp(12).toFloat())
-                }
-            }
-            clipToOutline = true
+        statusBarHeight = run {
+            val id = resources.getIdentifier("status_bar_height", "dimen", "android")
+            if (id > 0) resources.getDimensionPixelSize(id) else 0
         }
 
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT,
-            )
-        }
+        val initialWidth = (screenWidth * 0.55f).roundToInt().coerceAtLeast(minVideoWidth())
+        val initialHeight = videoHeightFor(initialWidth) + bottomBarHeight()
 
-        val topBar = buildTopBar()
-        content.addView(topBar)
-
-        val videoWrap = FrameLayout(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                0,
-                1f,
-            )
-            setBackgroundColor(Color.BLACK)
-        }
-
-        val sv = SurfaceView(this).apply {
-            layoutParams = FrameLayout.LayoutParams(dp(200), dp(320), Gravity.CENTER)
-        }
-        sv.holder.addCallback(object : SurfaceHolder.Callback {
-            override fun surfaceCreated(holder: SurfaceHolder) = onSurfaceAvailable(holder.surface)
-
-            override fun surfaceChanged(
-                holder: SurfaceHolder,
-                format: Int,
-                width: Int,
-                height: Int,
-            ) = onSurfaceAvailable(holder.surface)
-
-            override fun surfaceDestroyed(holder: SurfaceHolder) = onSurfaceGone()
-        })
-        sv.setOnTouchListener { _, event ->
-            handleSurfaceTouch(event)
-            true
-        }
-        videoWrap.addView(sv)
-        videoWrap.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitVideo() }
-        surfaceView = sv
-        videoContainer = videoWrap
-        content.addView(videoWrap)
-
-        container.addView(content)
-
-        val resizeHandle = View(this).apply {
-            background = GradientDrawable().apply {
-                cornerRadius = dp(4).toFloat()
-                setColor(0x66FFFFFF)
-            }
-            layoutParams = FrameLayout.LayoutParams(dp(40), dp(28)).apply {
-                gravity = Gravity.END or Gravity.BOTTOM
-                setMargins(0, 0, dp(6), dp(6))
-            }
-        }
-        setResizeHandle(resizeHandle)
-        container.addView(resizeHandle)
-
-        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-        } else {
-            @Suppress("DEPRECATION")
-            WindowManager.LayoutParams.TYPE_PHONE
-        }
         val lp = WindowManager.LayoutParams(
-            initWidth,
-            initHeight,
-            type,
-            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+            initialWidth,
+            initialHeight,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            } else {
+                @Suppress("DEPRECATION")
+                WindowManager.LayoutParams.TYPE_PHONE
+            },
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                 WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = (screenWidth - initWidth) / 2
-            y = (screenHeight - initHeight) / 2
+            x = (screenWidth - initialWidth) / 2
+            y = (screenHeight - initialHeight) / 2
         }
         params = lp
-        root = container
-        runCatching { windowManager.addView(container, lp) }
+
+        val composeView = ComposeView(this).apply {
+            setViewTreeLifecycleOwner(this@FloatingWindowService)
+            setViewTreeViewModelStoreOwner(this@FloatingWindowService)
+            setViewTreeSavedStateRegistryOwner(this@FloatingWindowService)
+            setContent {
+                FloatingWindowContent(
+                    session = session,
+                    actions = actions,
+                    onDrag = ::dragBy,
+                    onResize = ::resizeBy,
+                    onAction = ::dispatchAction,
+                    onSurfaceAvailable = ::onSurfaceAvailable,
+                    onSurfaceDestroyed = ::onSurfaceDestroyed,
+                )
+            }
+        }
+        root = composeView
+        runCatching { windowManager.addView(composeView, lp) }
             .onFailure { Log.e(TAG, "addView failed", it) }
-    }
-
-    private fun buildTopBar(): View {
-        val topBar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(0xCC222222.toInt())
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(40),
-            )
-        }
-        setDragHandle(topBar)
-
-        topBar.addView(makeBarButton("返回") { injectKey(4) })
-        topBar.addView(makeBarButton("主页") { injectKey(3) })
-        topBar.addView(makeBarButton("全屏") { openFullscreen() })
-        // 空白区域用于拖动
-        topBar.addView(View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
-        })
-        topBar.addView(makeBarButton("关闭") { stopSelf() })
-        return topBar
-    }
-
-    private fun makeBarButton(label: String, onClick: () -> Unit): TextView =
-        TextView(this).apply {
-            text = label
-            setTextColor(Color.WHITE)
-            textSize = 14f
-            gravity = Gravity.CENTER
-            setPadding(dp(10), 0, dp(10), 0)
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.MATCH_PARENT,
-            )
-            setOnClickListener { onClick() }
-        }
-
-    // ---------------------------------------------------------------------
-    // 拖动 / 缩放
-    // ---------------------------------------------------------------------
-
-    private fun setDragHandle(handle: View) {
-        var startX = 0
-        var startY = 0
-        var downRawX = 0f
-        var downRawY = 0f
-        handle.setOnTouchListener { _, event ->
-            val lp = params ?: return@setOnTouchListener false
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    startX = lp.x
-                    startY = lp.y
-                    downRawX = event.rawX
-                    downRawY = event.rawY
-                }
-
-                MotionEvent.ACTION_MOVE -> {
-                    val dx = (event.rawX - downRawX).roundToInt()
-                    val dy = (event.rawY - downRawY).roundToInt()
-                    lp.x = (startX + dx).coerceIn(-lp.width / 2, screenWidth - lp.width / 2)
-                    lp.y = (startY + dy).coerceIn(0, screenHeight - lp.height / 2)
-                    runCatching { windowManager.updateViewLayout(root, lp) }
-                }
-            }
-            true
-        }
-    }
-
-    private fun setResizeHandle(handle: View) {
-        var startW = 0
-        var startH = 0
-        var downRawX = 0f
-        var downRawY = 0f
-        handle.setOnTouchListener { _, event ->
-            val lp = params ?: return@setOnTouchListener false
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    startW = lp.width
-                    startH = lp.height
-                    downRawX = event.rawX
-                    downRawY = event.rawY
-                }
-
-                MotionEvent.ACTION_MOVE -> {
-                    lp.width = (startW + (event.rawX - downRawX)).roundToInt()
-                        .coerceIn(dp(200), screenWidth)
-                    lp.height = (startH + (event.rawY - downRawY)).roundToInt()
-                        .coerceIn(dp(200), screenHeight)
-                    runCatching { windowManager.updateViewLayout(root, lp) }
-                }
-
-                MotionEvent.ACTION_UP -> fitVideo()
-            }
-            true
-        }
-    }
-
-    // ---------------------------------------------------------------------
-    // 视频绑定
-    // ---------------------------------------------------------------------
-
-    private fun onSurfaceAvailable(surface: Surface) {
-        if (!surface.isValid) return
-        attachedSurface = surface
-        val info = AppRuntime.scrcpy?.currentSessionState?.value ?: return
-        scope.launch {
-            runCatching { NativeCoreFacade.attachVideoSurface(surface) }
-                .onFailure { Log.w(TAG, "attachVideoSurface failed", it) }
-        }
-        if (info.width > 0 && info.height > 0) {
-            runCatching { surfaceView?.holder?.setFixedSize(info.width, info.height) }
-        }
-        fitVideo(info)
-    }
-
-    private fun onSurfaceGone() {
-        val surface = attachedSurface ?: return
-        attachedSurface = null
-        scope.launch { runCatching { NativeCoreFacade.detachVideoSurface(surface) } }
     }
 
     private fun observeSession() {
         scope.launch {
             val scrcpy = AppRuntime.scrcpy ?: return@launch
             scrcpy.currentSessionState.collect { info ->
-                val surface = attachedSurface
-                if (info != null && surface != null && surface.isValid) {
-                    runCatching { NativeCoreFacade.attachVideoSurface(surface) }
-                }
-                fitVideo(info)
+                session = info
+                applyAspect(info)
             }
         }
     }
 
-    /** 在窗口内按视频宽高比居中放置画面，避免拉伸变形。 */
-    private fun fitVideo(
-        info: Scrcpy.Session.SessionInfo? = AppRuntime.scrcpy?.currentSessionState?.value,
-    ) {
-        val sv = surfaceView ?: return
-        val wrap = videoContainer ?: return
-        val wrapW = wrap.width
-        val wrapH = wrap.height
-        if (wrapW <= 0 || wrapH <= 0) return
-
-        val videoW = info?.width ?: 0
-        val videoH = info?.height ?: 0
-        val target = if (videoW > 0 && videoH > 0) {
-            val aspect = videoW.toFloat() / videoH
-            var w = wrapW
-            var h = (wrapW / aspect).roundToInt()
-            if (h > wrapH) {
-                h = wrapH
-                w = (wrapH * aspect).roundToInt()
-            }
-            w to h
-        } else {
-            wrapW to wrapH
-        }
-
-        val lp = sv.layoutParams as FrameLayout.LayoutParams
-        if (lp.width != target.first || lp.height != target.second) {
-            lp.width = target.first
-            lp.height = target.second
-            sv.layoutParams = lp
-        }
-        if (videoW > 0 && videoH > 0) {
-            runCatching { sv.holder.setFixedSize(videoW, videoH) }
-        }
-    }
-
-    // ---------------------------------------------------------------------
-    // 触控转发（多指）
-    // ---------------------------------------------------------------------
-
-    private fun handleSurfaceTouch(event: MotionEvent) {
-        val scrcpy = AppRuntime.scrcpy ?: return
-        val sv = surfaceView ?: return
-        val info = scrcpy.currentSessionState.value ?: return
-        if (info.width <= 0 || info.height <= 0) return
-        if (sv.width <= 0 || sv.height <= 0) return
-
-        fun map(index: Int): Pair<Int, Int> {
-            val nx = (event.getX(index) / sv.width).coerceIn(0f, 1f)
-            val ny = (event.getY(index) / sv.height).coerceIn(0f, 1f)
-            val maxX = (info.width - 1).coerceAtLeast(0)
-            val maxY = (info.height - 1).coerceAtLeast(0)
-            val x = (nx * maxX).roundToInt().coerceIn(0, maxX)
-            val y = (ny * maxY).roundToInt().coerceIn(0, maxY)
-            return x to y
-        }
-
-        fun inject(action: Int, id: Int, x: Int, y: Int, pressure: Float) {
-            scope.launch {
-                runCatching {
-                    scrcpy.injectTouch(
-                        action = action,
-                        pointerId = id.toLong(),
-                        x = x,
-                        y = y,
-                        screenWidth = info.width,
-                        screenHeight = info.height,
-                        pressure = pressure,
-                    )
-                }
-            }
-        }
-
-        when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
-                val index = event.actionIndex
-                val id = event.getPointerId(index)
-                val (x, y) = map(index)
-                activePointers[id] = x to y
-                inject(MotionEvent.ACTION_DOWN, id, x, y, event.getPressure(index))
-            }
-
-            MotionEvent.ACTION_MOVE -> {
-                for (index in 0 until event.pointerCount) {
-                    val id = event.getPointerId(index)
-                    val (x, y) = map(index)
-                    activePointers[id] = x to y
-                    inject(MotionEvent.ACTION_MOVE, id, x, y, event.getPressure(index))
-                }
-            }
-
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
-                val index = event.actionIndex
-                val id = event.getPointerId(index)
-                val (x, y) = map(index)
-                activePointers.remove(id)
-                inject(MotionEvent.ACTION_UP, id, x, y, 0f)
-            }
-
-            MotionEvent.ACTION_CANCEL -> {
-                activePointers.forEach { (id, pos) ->
-                    inject(MotionEvent.ACTION_UP, id, pos.first, pos.second, 0f)
-                }
-                activePointers.clear()
-            }
-        }
-    }
-
-    private fun injectKey(keycode: Int) {
-        val scrcpy = AppRuntime.scrcpy ?: return
+    private fun observeActions() {
         scope.launch {
-            runCatching {
-                scrcpy.injectKeycode(0, keycode)
-                scrcpy.injectKeycode(1, keycode)
+            appSettings.bundleState.collect { bundle ->
+                actions = VirtualButtonActions
+                    .splitLayout(VirtualButtonActions.parseStoredLayout(bundle.virtualButtonsLayout))
+                    .first
+                    .filter { it != VirtualButtonAction.MORE }
             }
         }
     }
 
-    private fun openFullscreen() {
-        runCatching {
-            startActivity(
-                StreamActivity.createIntent(this)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-            )
-        }
-        stopSelf()
+    /** 会话宽高变化时，按新比例修正窗口高度，保持画面不变形。 */
+    private fun applyAspect(info: Scrcpy.Session.SessionInfo?) {
+        val lp = params ?: return
+        val aspect = info
+            ?.takeIf { it.width > 0 && it.height > 0 }
+            ?.let { it.width.toFloat() / it.height.toFloat() }
+            ?: DEFAULT_ASPECT
+        videoAspect = aspect
+        lp.width = lp.width.coerceIn(minVideoWidth(), maxVideoWidth())
+        lp.height = videoHeightFor(lp.width) + bottomBarHeight()
+        clampPosition(lp)
+        runCatching { windowManager.updateViewLayout(root, lp) }
     }
 
-    // ---------------------------------------------------------------------
+    // ------------------------------------------------------------------
+    // 拖动 / 缩放
+    // ------------------------------------------------------------------
+
+    private fun dragBy(dx: Float, dy: Float) {
+        val lp = params ?: return
+        lp.x += dx.roundToInt()
+        lp.y += dy.roundToInt()
+        clampPosition(lp)
+        runCatching { windowManager.updateViewLayout(root, lp) }
+    }
+
+    /** 仅以水平位移驱动缩放，并强制保持画面长宽比。 */
+    private fun resizeBy(dx: Float) {
+        val lp = params ?: return
+        lp.width = (lp.width + dx.roundToInt()).coerceIn(minVideoWidth(), maxVideoWidth())
+        lp.height = videoHeightFor(lp.width) + bottomBarHeight()
+        clampPosition(lp)
+        runCatching { windowManager.updateViewLayout(root, lp) }
+    }
+
+    private fun clampPosition(lp: WindowManager.LayoutParams) {
+        val minX = -lp.width / 3
+        val maxX = screenWidth - lp.width / 3
+        lp.x = lp.x.coerceIn(minX, maxX)
+        lp.y = lp.y.coerceIn(statusBarHeight, (screenHeight - lp.height / 2).coerceAtLeast(statusBarHeight))
+    }
+
+    private fun minVideoWidth(): Int = (MIN_VIDEO_WIDTH_DP * density).roundToInt()
+
+    private fun maxVideoWidth(): Int {
+        val byHeight = ((screenHeight - bottomBarHeight()) * videoAspect).roundToInt()
+        return (screenWidth.coerceAtMost(byHeight)).coerceAtLeast(minVideoWidth())
+    }
+
+    private fun videoHeightFor(width: Int): Int =
+        (width / videoAspect).roundToInt().coerceAtLeast(1)
+
+    private fun bottomBarHeight(): Int = (BOTTOM_BAR_DP * density).roundToInt()
+
+    // ------------------------------------------------------------------
+    // 视频绑定
+    // ------------------------------------------------------------------
+
+    private fun onSurfaceAvailable(holder: SurfaceHolder) {
+        val surface = holder.surface
+        if (!surface.isValid) return
+        attachedSurface = surface
+        scope.launch {
+            runCatching { NativeCoreFacade.attachVideoSurface(surface) }
+                .onFailure { Log.w(TAG, "attachVideoSurface failed", it) }
+        }
+    }
+
+    private fun onSurfaceDestroyed() {
+        val surface = attachedSurface ?: return
+        attachedSurface = null
+        scope.launch { runCatching { NativeCoreFacade.detachVideoSurface(surface) } }
+    }
+
+    // ------------------------------------------------------------------
+    // 按键动作
+    // ------------------------------------------------------------------
+
+    private fun dispatchAction(action: VirtualButtonAction) {
+        val scrcpy = AppRuntime.scrcpy ?: return
+        when (action) {
+            VirtualButtonAction.PASTE_LOCAL_CLIPBOARD -> scope.launch {
+                val text = LocalInputService.getClipboardText(this@FloatingWindowService)
+                    ?.takeIf { it.isNotBlank() }
+                if (text == null) return@launch
+                val legacy = session?.legacyPaste ?: false
+                runCatching {
+                    if (legacy) scrcpy.injectText(text)
+                    else scrcpy.setClipboard(text, paste = true)
+                }.onFailure { Log.w(TAG, "paste failed", it) }
+            }
+
+            VirtualButtonAction.ALL_APPS,
+            VirtualButtonAction.RECENT_TASKS,
+            VirtualButtonAction.TOGGLE_IME,
+            VirtualButtonAction.PASSWORD_INPUT,
+                -> Toast.makeText(
+                    this,
+                    getString(R.string.floating_window_action_needs_app),
+                    Toast.LENGTH_SHORT,
+                ).show()
+
+            else -> action.keycode?.let { keycode ->
+                scope.launch {
+                    runCatching {
+                        scrcpy.injectKeycode(0, keycode)
+                        scrcpy.injectKeycode(1, keycode)
+                    }.onFailure { Log.w(TAG, "injectKeycode failed for $keycode", it) }
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
     // 前台服务
-    // ---------------------------------------------------------------------
+    // ------------------------------------------------------------------
 
     private fun startForegroundCompat() {
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -508,6 +387,12 @@ class FloatingWindowService : Service() {
             StreamActivity.createIntent(this).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
+        val stopIntent = PendingIntent.getService(
+            this,
+            1,
+            Intent(this, FloatingWindowService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, CHANNEL_ID)
         } else {
@@ -516,10 +401,16 @@ class FloatingWindowService : Service() {
         }
         val notification = builder
             .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentTitle("Scrcpy 悬浮窗")
-            .setContentText("正在镜像设备")
+            .setContentTitle(getString(R.string.floating_window_title))
             .setContentIntent(contentIntent)
             .setOngoing(true)
+            .addAction(
+                Notification.Action.Builder(
+                    null,
+                    getString(R.string.floating_window_close),
+                    stopIntent,
+                ).build(),
+            )
             .build()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -531,5 +422,142 @@ class FloatingWindowService : Service() {
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
+    }
+}
+
+// ----------------------------------------------------------------------
+// Compose 内容
+// ----------------------------------------------------------------------
+
+@Composable
+private fun FloatingWindowContent(
+    session: Scrcpy.Session.SessionInfo?,
+    actions: List<VirtualButtonAction>,
+    onDrag: (Float, Float) -> Unit,
+    onResize: (Float) -> Unit,
+    onAction: (VirtualButtonAction) -> Unit,
+    onSurfaceAvailable: (SurfaceHolder) -> Unit,
+    onSurfaceDestroyed: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color.Black),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+        ) {
+            AndroidView(
+                factory = { context ->
+                    SurfaceView(context).apply {
+                        holder.addCallback(object : SurfaceHolder.Callback {
+                            override fun surfaceCreated(holder: SurfaceHolder) =
+                                onSurfaceAvailable(holder)
+
+                            override fun surfaceChanged(
+                                holder: SurfaceHolder,
+                                format: Int,
+                                width: Int,
+                                height: Int,
+                            ) = onSurfaceAvailable(holder)
+
+                            override fun surfaceDestroyed(holder: SurfaceHolder) =
+                                onSurfaceDestroyed()
+                        })
+                    }
+                },
+                modifier = Modifier.fillMaxSize(),
+            )
+
+            if (session == null) {
+                Text(
+                    text = stringResource(R.string.floating_window_disconnected),
+                    color = Color.White.copy(alpha = 0.7f),
+                    modifier = Modifier.align(Alignment.Center),
+                )
+            }
+
+            DragBar(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 6.dp),
+                onDrag = onDrag,
+                onTap = {},
+            )
+
+            // 右下手柄：透明度为 0，不显示热区，仅保留触摸区
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .size(width = 44.dp, height = 30.dp)
+                    .pointerInput(Unit) {
+                        detectDragGestures { change, dragAmount ->
+                            change.consume()
+                            onResize(dragAmount.x)
+                        }
+                    },
+            )
+        }
+
+        if (actions.isNotEmpty()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(44.dp)
+                    .background(Color.Black.copy(alpha = 0.4f)),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                actions.forEach { action ->
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .clickable { onAction(action) },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = action.icon,
+                            contentDescription = stringResource(action.titleResId),
+                            tint = Color.White,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DragBar(
+    modifier: Modifier,
+    onDrag: (Float, Float) -> Unit,
+    onTap: () -> Unit,
+) {
+    Box(
+        modifier = modifier
+            .width(96.dp)
+            .height(26.dp)
+            .clip(RoundedCornerShape(50))
+            .background(Color.White.copy(alpha = 0.22f))
+            .pointerInput(Unit) { detectTapGestures { onTap() } }
+            .pointerInput(Unit) {
+                detectDragGestures { change, dragAmount ->
+                    change.consume()
+                    onDrag(dragAmount.x, dragAmount.y)
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .width(64.dp)
+                .height(6.dp)
+                .clip(RoundedCornerShape(50))
+                .background(Color.White.copy(alpha = 0.6f)),
+        )
     }
 }
