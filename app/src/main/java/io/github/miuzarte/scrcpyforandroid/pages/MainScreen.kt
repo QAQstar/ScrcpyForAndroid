@@ -132,6 +132,8 @@ sealed interface RootScreen: NavKey {
     data object FullscreenControl: RootScreen // compatibility mode
     @Serializable
     data class ScrcpyOptionRecord(val profileId: String): RootScreen
+    @Serializable
+    data class ScrcpyAdvanced(val profileId: String): RootScreen
 }
 
 @Composable
@@ -714,6 +716,14 @@ fun MainScreen() {
             ScrcpyAllOptionsScreen(
                 scrollBehavior = advancedPageScrollBehavior,
                 scrcpy = scrcpy,
+            )
+        }
+
+        entry<RootScreen.ScrcpyAdvanced>(swipeDismiss = swipeBackDirection) { route ->
+            ScrcpyAllOptionsScreen(
+                scrollBehavior = advancedPageScrollBehavior,
+                scrcpy = scrcpy,
+                initialProfileId = route.profileId,
             )
         }
 

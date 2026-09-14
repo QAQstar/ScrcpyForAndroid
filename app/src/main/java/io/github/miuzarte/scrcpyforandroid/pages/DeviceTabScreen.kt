@@ -546,6 +546,9 @@ internal fun DeviceTabPage(
                 viewModel.setEditingDeviceId(null)
             },
             onEditorCancel = { viewModel.setEditingDeviceId(null) },
+            onEditScrcpyConfig = { profileId ->
+                navigator.push(RootScreen.ScrcpyAdvanced(profileId))
+            },
         )
     }
 

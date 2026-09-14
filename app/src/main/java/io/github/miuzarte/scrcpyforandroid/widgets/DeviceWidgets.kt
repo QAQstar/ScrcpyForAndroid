@@ -8,7 +8,12 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.relocation.BringIntoViewRequester
@@ -1123,6 +1128,29 @@ fun ScrcpyVideoSurface(
     )
 }
 
+/**
+ * 长按检测: 在 Initial pass 监听且不消费事件, 因此不会破坏子组件自身的点击行为。
+ * 用于让本身可点击的 preference 也支持长按。
+ */
+private fun Modifier.onLongPressCompat(onLongPress: () -> Unit): Modifier = pointerInput(onLongPress) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+        val finished = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+            var done = false
+            while (!done) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                val change = event.changes.firstOrNull { it.id == down.id }
+                if (change == null || !change.pressed ||
+                    (change.position - down.position).getDistance() > viewConfiguration.touchSlop
+                ) {
+                    done = true
+                }
+            }
+        }
+        if (finished == null) onLongPress()
+    }
+}
+
 @Composable
 internal fun DeviceTile(
     device: DeviceShortcut,
@@ -1138,6 +1166,7 @@ internal fun DeviceTile(
     onEditorSave: (DeviceShortcut) -> Unit,
     onEditorDelete: () -> Unit,
     onEditorCancel: () -> Unit,
+    onEditScrcpyConfig: (String) -> Unit,
 ) {
     val haptic = LocalHapticFeedback.current
     val scrcpyProfilesState by Storage.scrcpyProfiles.state.collectAsState()
@@ -1367,6 +1396,9 @@ internal fun DeviceTile(
                         title = stringResource(R.string.device_config_scrcpy_config),
                         items = profileNames,
                         selectedIndex = profileDropdownIndex,
+                        modifier = Modifier.onLongPressCompat {
+                            onEditScrcpyConfig(currentDraft.scrcpyProfileId)
+                        },
                         onSelectedIndexChange = {
                             val profileId = profileIds.getOrElse(it) {
                                 ScrcpyOptions.GLOBAL_PROFILE_ID
@@ -1461,6 +1493,7 @@ internal fun DeviceTileList(
     onEditorSave: (DeviceShortcut, DeviceShortcut) -> Unit,
     onEditorDelete: (DeviceShortcut) -> Unit,
     onEditorCancel: () -> Unit,
+    onEditScrcpyConfig: (String) -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -1484,6 +1517,7 @@ internal fun DeviceTileList(
                 onEditorSave = { updated -> onEditorSave(device, updated) },
                 onEditorDelete = { onEditorDelete(device) },
                 onEditorCancel = onEditorCancel,
+                onEditScrcpyConfig = onEditScrcpyConfig,
             )
         }
     }

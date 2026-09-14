@@ -261,6 +261,7 @@ class FloatingWindowService : Service(),
                 )
                 outsideActions = outside.filter { it != VirtualButtonAction.MORE }
                 moreActions = more
+                applyAspect(session)
             }
         }
     }
@@ -317,7 +318,8 @@ class FloatingWindowService : Service(),
     private fun videoHeightFor(width: Int): Int =
         (width / videoAspect).roundToInt().coerceAtLeast(1)
 
-    private fun bottomBarHeight(): Int = (BOTTOM_BAR_DP * density).roundToInt()
+    private fun bottomBarHeight(): Int =
+        if (outsideActions.isEmpty()) 0 else (BOTTOM_BAR_DP * density).roundToInt()
 
     // ------------------------------------------------------------------
     // 视频绑定

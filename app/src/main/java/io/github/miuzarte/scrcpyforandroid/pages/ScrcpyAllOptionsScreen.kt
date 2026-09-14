@@ -62,6 +62,7 @@ import kotlin.math.roundToInt
 internal fun ScrcpyAllOptionsScreen(
     scrollBehavior: ScrollBehavior,
     scrcpy: Scrcpy,
+    initialProfileId: String? = null,
 ) {
     val haptic = LocalHapticFeedback.current
     val navigator = LocalRootNavigator.current
@@ -73,8 +74,8 @@ internal fun ScrcpyAllOptionsScreen(
     val soBundleShared by scrcpyOptions.bundleState.collectAsState()
     val scrcpyProfilesState by scrcpyProfiles.state.collectAsState()
     val initialSelectedProfileId = remember {
-        // 直接读 session 级状态, 不依赖快捷设备
-        AppRuntime.currentConnectionProfileId.value
+        // 优先使用显式传入的 profile, 否则直接读 session 级状态, 不依赖快捷设备
+        initialProfileId ?: AppRuntime.currentConnectionProfileId.value
     }
     val selectedProfileIdState = rememberSaveable(initialSelectedProfileId) {
         mutableStateOf(initialSelectedProfileId)
