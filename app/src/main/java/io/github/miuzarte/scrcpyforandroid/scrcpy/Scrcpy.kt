@@ -19,7 +19,10 @@ import io.github.miuzarte.scrcpyforandroid.services.*
 import io.github.miuzarte.scrcpyforandroid.services.EventLogger.logEvent
 import io.github.miuzarte.scrcpyforandroid.storage.Storage.appSettings
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -114,12 +117,12 @@ class Scrcpy(
 
     val listings = Listings()
 
+    // 远端意外断开时发射, 供上层提示并可一键重连
+    private val _remoteDisconnects = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val remoteDisconnects: SharedFlow<Unit> = _remoteDisconnects.asSharedFlow()
+
     companion object {
         private const val TAG = "Scrcpy"
-
-        // 并发 stop() 时避免重复弹出同一条断开通知
-        @Volatile
-        private var lastRemoteDisconnectSnackbarAt = 0L
 
         const val DEFAULT_SERVER_ASSET = "bin/scrcpy-server-v4.1"
         const val DEFAULT_SERVER_ASSET_NAME = "scrcpy-server-v4.1"
@@ -357,11 +360,7 @@ class Scrcpy(
                 stopClipboardSync()
                 if (reason == StopReason.REMOTE_DISCONNECTED) {
                     logEvent(R.string.vm_session_disconnected, level = Log.WARN)
-                    val now = android.os.SystemClock.elapsedRealtime()
-                    if (now - lastRemoteDisconnectSnackbarAt > 500L) {
-                        lastRemoteDisconnectSnackbarAt = now
-                        AppRuntime.snackbar(R.string.vm_session_disconnected)
-                    }
+                    _remoteDisconnects.tryEmit(Unit)
                 }
                 Log.i(TAG, "stop(): Session stopped successfully")
                 true

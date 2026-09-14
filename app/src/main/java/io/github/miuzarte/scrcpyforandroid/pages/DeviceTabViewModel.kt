@@ -29,6 +29,7 @@ import io.github.miuzarte.scrcpyforandroid.storage.Storage.scrcpyOptions
 import io.github.miuzarte.scrcpyforandroid.storage.Storage.scrcpyProfiles
 import io.github.miuzarte.scrcpyforandroid.widgets.VirtualButtonAction
 import io.github.miuzarte.scrcpyforandroid.widgets.VirtualButtonActions
+import top.yukonga.miuix.kmp.basic.SnackbarResult
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
@@ -306,6 +307,52 @@ internal class DeviceTabViewModel(
                 if (serialized != _qdBundle.value.quickDevicesList) {
                     _qdBundle.update { it.copy(quickDevicesList = serialized) }
                 }
+            }
+        }
+
+        // 远端意外断开 -> 提供一键重连
+        viewModelScope.launch {
+            scrcpy.remoteDisconnects.collect { promptReconnect() }
+        }
+
+        // 悬浮窗等外部入口请求重连
+        viewModelScope.launch {
+            AppRuntime.reconnectRequests.collect { requestReconnect() }
+        }
+    }
+
+    /** 断开提示: Snackbar 上带「重连」动作。 */
+    private fun promptReconnect() {
+        AppRuntime.snackbar(
+            messageResId = R.string.vm_session_disconnected,
+            actionLabelResId = R.string.action_reconnect,
+            onResult = { result ->
+                if (result == SnackbarResult.ActionPerformed) requestReconnect()
+            },
+        )
+    }
+
+    /** 重新连接当前设备; ADB 已断开时先恢复 ADB。 */
+    private fun requestReconnect() {
+        viewModelScope.launch {
+            runCatching {
+                if (!adbConnected.value) {
+                    val target = currentTarget.value ?: return@runCatching
+                    connectionController.connectWithTimeout(
+                        target.host,
+                        target.port,
+                        ADB_CONNECT_TIMEOUT_MS,
+                    )
+                    connectionController.handleAdbConnected(
+                        target.host,
+                        target.port,
+                        connectedScrcpyProfileId.value,
+                    )
+                }
+                if (sessionInfo.value == null) startScrcpySession()
+            }.onFailure { error ->
+                logEvent(R.string.vm_auto_reconnect_failed, level = Log.ERROR, error = error)
+                AppRuntime.snackbar(R.string.vm_auto_reconnect_failed)
             }
         }
     }

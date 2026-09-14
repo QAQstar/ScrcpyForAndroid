@@ -10,6 +10,7 @@ import io.github.miuzarte.scrcpyforandroid.scrcpy.Scrcpy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.SnackbarDuration
@@ -32,6 +33,9 @@ object AppRuntime {
     var scrcpy: Scrcpy? = null
     var currentConnectionTarget: ConnectionTarget? = null
     var currentConnectedDevice: ConnectedDeviceInfo? = null
+
+    // 外部入口（如悬浮窗）请求重新连接当前设备
+    val reconnectRequests = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
 
     // 当前设备使用的 profile ID (session 级, 脱离快捷设备独立运作)
     val currentConnectionProfileId = MutableStateFlow("global")

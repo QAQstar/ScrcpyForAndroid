@@ -616,6 +616,7 @@
     <string name="floating_window_action_needs_app">该功能需在应用内使用</string>
     <string name="floating_window_permission_needed">请先授予「显示在其他应用上层」权限</string>
     <string name="device_config_floating_window">启用悬浮窗</string>
+    <string name="action_reconnect">重连</string>
     <string name="vm_decoder_unsupported_size">Device decoder does not support %1$dx%2$d, downgrading to max_size=%3$d and restarting</string>
     <string name="vm_decoder_init_failed">Decoder initialization failed: %1$s</string>
     <string name="vm_decoder_error_restarting">Decoder error, restarting session</string>

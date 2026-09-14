@@ -232,6 +232,7 @@ class FloatingWindowService : Service(),
                     onDrag = ::dragBy,
                     onResize = ::resizeBy,
                     onAction = ::dispatchAction,
+                    onReconnect = { AppRuntime.reconnectRequests.tryEmit(Unit) },
                     onSurfaceAvailable = ::onSurfaceAvailable,
                     onSurfaceDestroyed = ::onSurfaceDestroyed,
                 )
@@ -444,6 +445,7 @@ private fun FloatingWindowContent(
     onDrag: (Float, Float) -> Unit,
     onResize: (Float) -> Unit,
     onAction: (VirtualButtonAction) -> Unit,
+    onReconnect: () -> Unit,
     onSurfaceAvailable: (SurfaceHolder) -> Unit,
     onSurfaceDestroyed: () -> Unit,
 ) {
@@ -482,11 +484,30 @@ private fun FloatingWindowContent(
             )
 
             if (session == null) {
-                Text(
-                    text = stringResource(R.string.floating_window_disconnected),
-                    color = Color.White.copy(alpha = 0.7f),
-                    modifier = Modifier.align(Alignment.Center),
-                )
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Text(
+                        text = stringResource(R.string.floating_window_disconnected),
+                        color = Color.White.copy(alpha = 0.75f),
+                    )
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color.White.copy(alpha = 0.18f))
+                            .clickable { onReconnect() }
+                            .padding(horizontal = 18.dp, vertical = 8.dp),
+                    ) {
+                        Text(
+                            text = stringResource(R.string.action_reconnect),
+                            color = Color.White,
+                        )
+                    }
+                }
             }
 
             DragBar(
