@@ -117,10 +117,10 @@ class FloatingWindowService : Service(),
 
     private val lifecycleRegistry = LifecycleRegistry(this)
     private val savedStateRegistryController = SavedStateRegistryController.create(this)
-    private val viewModelStore = ViewModelStore()
+    private val viewModelStoreInstance = ViewModelStore()
 
     override val lifecycle: Lifecycle get() = lifecycleRegistry
-    override val viewModelStore: ViewModelStore get() = viewModelStore
+    override val viewModelStore: ViewModelStore get() = viewModelStoreInstance
     override val savedStateRegistry: SavedStateRegistry
         get() = savedStateRegistryController.savedStateRegistry
 
