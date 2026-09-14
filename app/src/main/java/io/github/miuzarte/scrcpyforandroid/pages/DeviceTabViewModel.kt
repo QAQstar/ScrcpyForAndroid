@@ -17,6 +17,7 @@ import io.github.miuzarte.scrcpyforandroid.nativecore.QrPairingCredentials
 import io.github.miuzarte.scrcpyforandroid.nativecore.UsbAdbSession
 import io.github.miuzarte.scrcpyforandroid.nativecore.UsbDeviceInfo
 import io.github.miuzarte.scrcpyforandroid.scrcpy.Scrcpy
+import android.provider.Settings as AndroidSettings
 import io.github.miuzarte.scrcpyforandroid.services.*
 import io.github.miuzarte.scrcpyforandroid.services.EventLogger.logEvent
 import io.github.miuzarte.scrcpyforandroid.storage.AppSettings
@@ -379,21 +380,23 @@ internal class DeviceTabViewModel(
         name: String? = null,
         startScrcpyOnConnect: Boolean? = null,
         openFullscreenOnStart: Boolean? = null,
+        floatingWindowOnConnect: Boolean? = null,
         scrcpyProfileId: String? = null,
         newPort: Int? = null,
         updateNameOnlyWhenEmpty: Boolean = false,
     ) {
         _savedShortcuts.update {
             it.update(
-                id,
-                host,
-                port,
-                name,
-                startScrcpyOnConnect,
-                openFullscreenOnStart,
-                scrcpyProfileId,
-                newPort,
-                updateNameOnlyWhenEmpty,
+                id = id,
+                host = host,
+                port = port,
+                name = name,
+                startScrcpyOnConnect = startScrcpyOnConnect,
+                openFullscreenOnStart = openFullscreenOnStart,
+                floatingWindowOnConnect = floatingWindowOnConnect,
+                scrcpyProfileId = scrcpyProfileId,
+                newPort = newPort,
+                updateNameOnlyWhenEmpty = updateNameOnlyWhenEmpty,
             )
         }
     }
@@ -769,10 +772,22 @@ internal class DeviceTabViewModel(
         }
     }
 
+    private fun launchFloatingWindow() {
+        val context = AppRuntime.context
+        if (AndroidSettings.canDrawOverlays(context)) {
+            FloatingWindowService.start(context)
+        } else {
+            AppRuntime.snackbar(R.string.floating_window_permission_needed)
+        }
+    }
+
     suspend fun startScrcpySession(
         openFullscreen: Boolean = false,
         startAppOverride: String? = null,
     ) {
+        val floatingWindowEnabled = currentTarget.value
+            ?.let { target -> savedShortcuts.value.firstOrNull { it.matchesAddress(target) } }
+            ?.floatingWindowOnConnect == true
         val activeBundle = resolveScrcpyBundle(connectedScrcpyProfileId.value)
         val options = scrcpyOptions.toClientOptions(activeBundle).fix()
         val resolvedOptions = startAppOverride
@@ -797,9 +812,10 @@ internal class DeviceTabViewModel(
                 }
         }
 
-        if ((resolvedOptions.fullscreen || openFullscreen) &&
-            resolvedOptions.video && resolvedOptions.videoPlayback
-        ) {
+        val canShowVideo = resolvedOptions.video && resolvedOptions.videoPlayback
+        if (floatingWindowEnabled && canShowVideo) {
+            launchFloatingWindow()
+        } else if ((resolvedOptions.fullscreen || openFullscreen) && canShowVideo) {
             _fullscreenRequests.trySend(Unit)
         }
         if (resolvedOptions.disableScreensaver) AppScreenOn.acquire()

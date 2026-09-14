@@ -534,6 +534,7 @@ internal fun DeviceTabPage(
                     port = updated.port,
                     startScrcpyOnConnect = updated.startScrcpyOnConnect,
                     openFullscreenOnStart = updated.openFullscreenOnStart,
+                    floatingWindowOnConnect = updated.floatingWindowOnConnect,
                     scrcpyProfileId = updated.scrcpyProfileId,
                 )
             },

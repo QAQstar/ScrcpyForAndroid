@@ -1354,6 +1354,14 @@ internal fun DeviceTile(
                             },
                         )
                     }
+                    CheckboxPreference(
+                        title = stringResource(R.string.device_config_floating_window),
+                        checkboxLocation = CheckboxLocation.End,
+                        checked = currentDraft.floatingWindowOnConnect,
+                        onCheckedChange = {
+                            draft = currentDraft.copy(floatingWindowOnConnect = it)
+                        },
+                    )
                     val textGlobal = stringResource(R.string.text_global)
                     OverlayDropdownPreference(
                         title = stringResource(R.string.device_config_scrcpy_config),

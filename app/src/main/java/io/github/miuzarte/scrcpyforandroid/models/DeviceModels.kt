@@ -134,6 +134,7 @@ class DeviceShortcuts(val devices: List<DeviceShortcut>): List<DeviceShortcut> b
         name: String? = null,
         startScrcpyOnConnect: Boolean? = null,
         openFullscreenOnStart: Boolean? = null,
+        floatingWindowOnConnect: Boolean? = null,
         scrcpyProfileId: String? = null,
         newPort: Int? = null,
         updateNameOnlyWhenEmpty: Boolean = false,
@@ -180,6 +181,7 @@ class DeviceShortcuts(val devices: List<DeviceShortcut>): List<DeviceShortcut> b
             addresses = updatedAddresses,
             startScrcpyOnConnect = startScrcpyOnConnect ?: old.startScrcpyOnConnect,
             openFullscreenOnStart = openFullscreenOnStart ?: old.openFullscreenOnStart,
+            floatingWindowOnConnect = floatingWindowOnConnect ?: old.floatingWindowOnConnect,
             scrcpyProfileId = scrcpyProfileId ?: old.scrcpyProfileId,
         )
 
@@ -287,6 +289,7 @@ data class DeviceShortcut(
     val addresses: List<String> = listOf(""),
     val startScrcpyOnConnect: Boolean = false,
     val openFullscreenOnStart: Boolean = false,
+    val floatingWindowOnConnect: Boolean = false,
     val scrcpyProfileId: String = ScrcpyOptions.GLOBAL_PROFILE_ID,
 ) {
     val host: String
