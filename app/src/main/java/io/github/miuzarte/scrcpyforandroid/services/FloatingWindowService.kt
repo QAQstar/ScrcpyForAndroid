@@ -25,6 +25,8 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -33,12 +35,14 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -137,7 +141,8 @@ class FloatingWindowService : Service(),
     private var density = 1f
 
     private var session by mutableStateOf<Scrcpy.Session.SessionInfo?>(null)
-    private var actions by mutableStateOf<List<VirtualButtonAction>>(emptyList())
+    private var outsideActions by mutableStateOf<List<VirtualButtonAction>>(emptyList())
+    private var moreActions by mutableStateOf<List<VirtualButtonAction>>(emptyList())
 
     private var videoAspect = DEFAULT_ASPECT
 
@@ -222,7 +227,8 @@ class FloatingWindowService : Service(),
             setContent {
                 FloatingWindowContent(
                     session = session,
-                    actions = actions,
+                    outsideActions = outsideActions,
+                    moreActions = moreActions,
                     onDrag = ::dragBy,
                     onResize = ::resizeBy,
                     onAction = ::dispatchAction,
@@ -249,10 +255,11 @@ class FloatingWindowService : Service(),
     private fun observeActions() {
         scope.launch {
             appSettings.bundleState.collect { bundle ->
-                actions = VirtualButtonActions
-                    .splitLayout(VirtualButtonActions.parseStoredLayout(bundle.virtualButtonsLayout))
-                    .first
-                    .filter { it != VirtualButtonAction.MORE }
+                val (outside, more) = VirtualButtonActions.splitLayout(
+                    VirtualButtonActions.parseStoredLayout(bundle.virtualButtonsLayout),
+                )
+                outsideActions = outside.filter { it != VirtualButtonAction.MORE }
+                moreActions = more
             }
         }
     }
@@ -432,13 +439,15 @@ class FloatingWindowService : Service(),
 @Composable
 private fun FloatingWindowContent(
     session: Scrcpy.Session.SessionInfo?,
-    actions: List<VirtualButtonAction>,
+    outsideActions: List<VirtualButtonAction>,
+    moreActions: List<VirtualButtonAction>,
     onDrag: (Float, Float) -> Unit,
     onResize: (Float) -> Unit,
     onAction: (VirtualButtonAction) -> Unit,
     onSurfaceAvailable: (SurfaceHolder) -> Unit,
     onSurfaceDestroyed: () -> Unit,
 ) {
+    var showMenu by remember { mutableStateOf(false) }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -485,8 +494,21 @@ private fun FloatingWindowContent(
                     .align(Alignment.TopCenter)
                     .padding(top = 6.dp),
                 onDrag = onDrag,
-                onTap = {},
+                onTap = { showMenu = !showMenu },
             )
+
+            if (showMenu && moreActions.isNotEmpty()) {
+                ActionMenu(
+                    actions = moreActions,
+                    onAction = {
+                        onAction(it)
+                        showMenu = false
+                    },
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 38.dp),
+                )
+            }
 
             // 右下手柄：透明度为 0，不显示热区，仅保留触摸区
             Box(
@@ -502,7 +524,7 @@ private fun FloatingWindowContent(
             )
         }
 
-        if (actions.isNotEmpty()) {
+        if (outsideActions.isNotEmpty()) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -511,7 +533,7 @@ private fun FloatingWindowContent(
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                actions.forEach { action ->
+                outsideActions.forEach { action ->
                     Box(
                         modifier = Modifier
                             .weight(1f)
@@ -559,5 +581,40 @@ private fun DragBar(
                 .clip(RoundedCornerShape(50))
                 .background(Color.White.copy(alpha = 0.6f)),
         )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ActionMenu(
+    actions: List<VirtualButtonAction>,
+    onAction: (VirtualButtonAction) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    FlowRow(
+        modifier = modifier
+            .widthIn(max = 300.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.Black.copy(alpha = 0.55f))
+            .padding(6.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+        maxItemsInEachRow = 5,
+    ) {
+        actions.forEach { action ->
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable { onAction(action) },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = action.icon,
+                    contentDescription = stringResource(action.titleResId),
+                    tint = Color.White,
+                )
+            }
+        }
     }
 }
